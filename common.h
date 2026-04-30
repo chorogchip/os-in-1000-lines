@@ -1,5 +1,7 @@
 #pragma once
 
+#define PAGE_SIZE 4096
+
 typedef int bool;
 typedef unsigned char uint8_t;
 typedef unsigned short uint16_t;
@@ -9,9 +11,9 @@ typedef signed char int8_t;
 typedef signed short int16_t;
 typedef signed int int32_t;
 typedef signed long long int64_t;
-typedef u32_t size_t;
-typedef u32_t paddr_t;
-typedef u32_t vaddr_t;
+typedef uint32_t size_t;
+typedef uint32_t paddr_t;
+typedef uint32_t vaddr_t;
 
 #define true 1
 #define false 0
@@ -29,9 +31,11 @@ void* memcpy(void* dst, const void* src, size_t n);
 char* strcpy(char* dst, const char* src);
 int strcmp(const char* s1, const char* s2);
 
-void putch(char ch);
+void putc(char ch);
 void puts(char* str);
 void puti(int32_t i);
 void putu(uint32_t u);
+void putx(uint32_t u);
 
 void printf(const char* fmt, ...);
+
