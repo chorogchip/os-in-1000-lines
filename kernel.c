@@ -3,6 +3,9 @@
 
 extern char __bss[], __bss_end[], __stack_top[];
 extern char __free_ram[], __free_ram_end[];
+extern char __kernel_base[];
+
+void map_page(uint32_t *table1, uint32_t vaddr, paddr_t paddr, uint32_t flags);
 
 struct sbiret sbi_call(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5, long fid, long eid) {
     register long a0 __asm__("a0") = arg0;
@@ -109,7 +112,7 @@ void handle_trap(struct trap_frame *f) {
     uint32_t stval = READ_CSR(stval);
     uint32_t user_pc = READ_CSR(sepc);
 
-    PANIC("unexpedted trap scause=%x, stval=%x, sepc=%x\n",
+    PANIC("unexpected trap scause=%x, stval=%x, sepc=%x\n",
         scause, stval, user_pc);
 }
 
@@ -137,6 +140,7 @@ struct process {
     int pid;
     int state;
     vaddr_t sp;
+    uint32_t *page_table;
     uint8_t stack[8192];
 };
 
@@ -210,10 +214,17 @@ struct process *create_process(uint32_t pc) {
     *--sp = 0; // s1
     *--sp = 0; // s0
     *--sp = (uint32_t) pc; // ra
+
+    uint32_t *page_table = (uint32_t*)alloc_pages(1);
+    for (paddr_t paddr = (paddr_t) __kernel_base;
+            paddr < (paddr_t) __free_ram_end; paddr += PAGE_SIZE)
+        map_page(page_table, paddr, paddr, PAGE_R | PAGE_W | PAGE_X);
+
                 
     proc->pid = i + 1;
     proc->state = PROC_RUNNABLE;
     proc->sp = (uint32_t) sp;
+    proc->page_table = page_table;
     return proc;
 }
 
@@ -221,10 +232,22 @@ void yield(void) {
 
     struct process *next = idle_proc;
 
+    for (int i = 0; i < PROCS_MAX; ++i) {
+        struct process *proc = &procs[(current_proc->pid + i) % PROCS_MAX];
+        if (proc->state == PROC_RUNNABLE && proc != current_proc) {
+            next = proc;
+            break;
+        }
+    }
+
     __asm__ __volatile__(
+        "sfence.vma\n"
+        "csrw satp, %[satp]\n"
+        "sfence.vma\n"
         "csrw sscratch, %[sscratch]\n"
         :
-        : [sscratch] "r" ((uint32_t)&next->stack[sizeof(next->stack)])
+        : [satp] "r" (SATP_SV32 | ((uint32_t) next->page_table / PAGE_SIZE)),
+          [sscratch] "r" ((uint32_t)&next->stack[sizeof(next->stack)])
     );
 
     struct process *prev = current_proc;
@@ -235,6 +258,24 @@ void yield(void) {
 void delay(void) {
     for (int i = 0; i < 30000000; i++)
         __asm__ __volatile__("nop");
+}
+
+void map_page(uint32_t *table1, uint32_t vaddr, paddr_t paddr, uint32_t flags) {
+    if (!is_aligned(vaddr, PAGE_SIZE))
+        PANIC("unaligned vaddr %x", vaddr);
+
+    if (!is_aligned(paddr, PAGE_SIZE))
+        PANIC("unaligned paddr %x", paddr);
+
+    uint32_t vpn1 = (vaddr >> 22) & 0x3ff;
+    if ((table1[vpn1] & PAGE_V) == 0) {
+        uint32_t pt_paddr = alloc_pages(1);
+        table1[vpn1] = ((pt_paddr / PAGE_SIZE) << 10) | PAGE_V;
+    }
+
+    uint32_t vpn0 = (vaddr >> 12) & 0x3ff;
+    uint32_t *table0 = (uint32_t*) ((table1[vpn1] >> 10) * PAGE_SIZE);
+    table0[vpn0] = ((paddr / PAGE_SIZE) << 10) | flags | PAGE_V;
 }
 
 struct process *proc_a, *proc_b;
@@ -261,7 +302,7 @@ void kernel_main(void) {
 
     printf("\n\n");
 
-    WRITE_CSR(stvec, (uint32_t) kernel_entry);
+    WRITE_CSR(stvec, (uint32_t)kernel_entry);
 
     idle_proc = create_process((uint32_t) NULL);
     idle_proc->pid = 0;
